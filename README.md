@@ -1,6 +1,9 @@
 # StockTown
 我的第一個延伸vibe coding練習,X 看到 Ryan大神很厲害，致敬一個台股版本
 
+https://kendevchen.github.io/StockTown/
+
+
 # 台股小鎮 stock-town
 
 把台股每日收盤資料變成一座 3D 迷你小鎮。每檔股票或 ETF 都是一間店，成交越熱絡，街上的人潮與車流就越多。

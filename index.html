@@ -64,6 +64,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);overflow:hid
 .chip.sample{border-color:rgba(245,164,69,.5);color:#F5A445}
 .card-name{display:flex;align-items:baseline;gap:10px;margin-top:8px}
 .card-name h2{margin:0;font-size:26px;font-weight:800}
+.card-tools{display:flex;align-items:center;gap:6px}
+#cToggle{all:unset;cursor:pointer;width:28px;height:24px;display:grid;place-items:center;border-radius:8px;background:rgba(255,255,255,.06);font-size:13px;transition:transform .2s}
+#cToggle:hover{background:rgba(255,255,255,.12)}
+#cToggle:focus-visible{outline:2px solid var(--cyan);outline-offset:1px}
+#cMini{display:none;margin-left:auto;white-space:nowrap}
+#card.collapsed #cBody{display:none}
+#card.collapsed #cMini{display:inline}
+#card.collapsed #cToggle{transform:rotate(180deg)}
+#card.collapsed .card-name{margin-top:4px}
+#card.collapsed .card-name h2{font-size:20px}
 .card-kpi{display:flex;align-items:flex-end;gap:14px;margin-top:10px}
 .kpi-num{font-family:var(--mono);font-weight:500;font-size:40px;line-height:.95}
 .kpi-side{display:flex;flex-direction:column;gap:4px;padding-bottom:2px}
@@ -133,8 +143,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);overflow:hid
   <ol id="rank"></ol>
 </aside>
 <section id="card" class="panel" aria-live="polite">
-  <div class="card-head"><span class="label" id="cRank"></span><span class="chip" id="cChip"></span></div>
-  <div class="card-name"><h2 id="cName">—</h2><span class="label" id="cCode"></span></div>
+  <div class="card-head"><span class="label" id="cRank"></span><span class="card-tools"><span class="chip" id="cChip"></span><button id="cToggle" type="button" aria-controls="cBody" aria-expanded="true" aria-label="收合資訊">▾</button></span></div>
+  <div class="card-name"><h2 id="cName">—</h2><span class="label" id="cCode"></span><span class="chg" id="cMini"></span></div>
+  <div id="cBody">
   <div class="card-kpi">
     <div class="kpi-num" id="cClose">—</div>
     <div class="kpi-side"><span class="label">收盤價</span><span class="chg" id="cChg"></span></div>
@@ -149,6 +160,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);overflow:hid
   <div class="inst"><span class="label">三大法人</span><span id="cInst">—</span></div>
   <div class="inst-bar"><i id="iBuy"></i><i id="iSell"></i></div>
   <div class="inst-legend"><span class="up" id="lBuy"></span><span class="down" id="lSell"></span></div>
+  </div>
 </section>
 <section id="player" class="panel" aria-label="模擬速度">
   <div class="pl-row">
@@ -157,7 +169,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);overflow:hid
       <button id="playBtn" type="button" aria-label="暫停">❚❚</button><button type="button" data-v="1">1×</button><button type="button" data-v="10">10×</button><button type="button" data-v="30">30×</button><button type="button" data-v="60">60×</button>
     </div>
   </div>
-  <div class="pl-keys">← → 換一家　空白鍵 暫停　1–4 速度　C 重設視角　拖曳旋轉、滾輪縮放</div>
+  <div class="pl-keys">← → 換一家　空白鍵 暫停　1–4 速度　C 重設視角　拖曳旋轉、中鍵拖曳平移、滾輪縮放</div>
   <div class="pl-src" id="src"></div>
   <div class="pl-note">門口兩條隊伍只代表三大法人，不是全部投資人；進店頻率依成交筆數。僅供參考，不構成投資建議。</div>
 </section>
@@ -248,7 +260,10 @@ scene.background = new THREE.Color('#0b111b');
 scene.fog = new THREE.Fog('#0b111b', 150, 380);
 const camera = new THREE.PerspectiveCamera(22, innerWidth / innerHeight, 1, 900);
 const controls = new OrbitControls(camera, renderer.domElement);
-Object.assign(controls, { enableDamping: true, dampingFactor: 0.08, enablePan: false, minDistance: 40, maxDistance: 240, minPolarAngle: 0.2, maxPolarAngle: 1.22, rotateSpeed: 0.6 });
+Object.assign(controls, { enableDamping: true, dampingFactor: 0.08, enablePan: true, screenSpacePanning: false, panSpeed: 0.8, minDistance: 40, maxDistance: 240, minPolarAngle: 0.2, maxPolarAngle: 1.22, rotateSpeed: 0.6 });
+// 平移：滑鼠按住中鍵拖曳；手機雙指拖曳（雙指開合仍是縮放）
+controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN };
+controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
 scene.add(new THREE.HemisphereLight('#4a5f94', '#2b2119', 2.2));
 const moon = new THREE.DirectionalLight('#aab9ff', 0.9);
 moon.castShadow = true;
@@ -338,6 +353,19 @@ function goTo(i, instant = false, reset = false) {
   updateUI();
 }
 controls.addEventListener('start', () => { fly = null; });
+// 平移範圍限制在店面外圍 PAN_MARGIN 以內，避免移出小鎮找不到路
+const PAN_MARGIN = 30;
+let panBox = null;
+function clampPan() {
+  if (!shops.length) return;
+  if (!panBox) {
+    const xs = shops.map(s => s.lot.x), zs = shops.map(s => s.lot.z);
+    panBox = { x0: Math.min(...xs) - PAN_MARGIN, x1: Math.max(...xs) + PAN_MARGIN, z0: Math.min(...zs) - PAN_MARGIN, z1: Math.max(...zs) + PAN_MARGIN };
+  }
+  const T = controls.target;
+  const dx = THREE.MathUtils.clamp(T.x, panBox.x0, panBox.x1) - T.x, dz = THREE.MathUtils.clamp(T.z, panBox.z0, panBox.z1) - T.z;
+  if (dx || dz) { T.x += dx; T.z += dz; camera.position.x += dx; camera.position.z += dz; }
+}
 
 // ==== [介面] ====
 function buildBoard() {
@@ -368,6 +396,9 @@ function updateUI() {
   const chg = $('#cChg');
   chg.textContent = `${fmtSigned(L.change || 0)}　${pctText(s.pct)}`;
   chg.className = 'chg ' + tone(L.change || 0);
+  const mini = $('#cMini');
+  mini.textContent = `${fmtPrice(L.close)}　${pctText(s.pct)}`;
+  mini.className = 'chg ' + tone(L.change || 0);
   $('#cVal').textContent = fmtYi(L.value);
   $('#cVol').textContent = fmtLots(L.volume);
   $('#cOHL').textContent = `${fmtPrice(L.open)}／${fmtPrice(L.high)}／${fmtPrice(L.low)}`;
@@ -405,7 +436,23 @@ function drawSpark(s) {
   });
   g.globalAlpha = 1;
 }
+// 資訊卡收合：手機預設收合，使用者的選擇記在 localStorage
+function setCardCollapsed(on) {
+  $('#card').classList.toggle('collapsed', on);
+  const b = $('#cToggle');
+  b.setAttribute('aria-expanded', String(!on));
+  b.setAttribute('aria-label', on ? '展開資訊' : '收合資訊');
+  try { localStorage.setItem('cardCollapsed', on ? '1' : '0'); } catch {}
+  if (!on) drawSpark(shops[current].s);
+}
+function initCardToggle() {
+  let saved = null;
+  try { saved = localStorage.getItem('cardCollapsed'); } catch {}
+  setCardCollapsed(saved === null ? matchMedia('(max-width:760px)').matches : saved === '1');
+  $('#cToggle').addEventListener('click', () => setCardCollapsed(!$('#card').classList.contains('collapsed')));
+}
 function bindEvents() {
+  initCardToggle();
   $('#prev').addEventListener('click', () => goTo(current - 1));
   $('#next').addEventListener('click', () => goTo(current + 1));
   $('#playBtn').addEventListener('click', togglePause);
@@ -452,6 +499,7 @@ function frame() {
     if (fly.t >= 1) fly = null;
   }
   controls.update();
+  clampPan();
   const T = controls.target;
   moon.position.set(T.x - 45, 95, T.z + 60);
   moon.target.position.copy(T);

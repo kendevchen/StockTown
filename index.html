@@ -18,6 +18,8 @@
 換算：店面順序＝成交金額排名；路人 4～18 人（成交金額平方根）；兩條隊伍 3～48 人（法人買進／賣出股數 × 收盤價的平方根）。
 模擬：town-sim.js。路人經過右前角排買方、左前角排賣方；叫號間隔 7～2.2 秒（成交筆數平方根）；排頭進店、從中間走道出來。
       車流每個街廓 1～4 台（成交金額）。播放速度 1／10／30／60 倍，可暫停。
+時間：clk.hour 隨模擬時間前進（1× 為真實時間），可 ±1 小時、關閉日夜循環；applyTime() 依太陽高度混合夜晚／黃昏／白天。
+快門：town-sim 記錄每台車最近 150 個位置，畫成頭燈白、尾燈紅光帶，依曝光秒數（0／0.6／1.8／4）淡出。
 顏色：紅漲綠跌。招牌只放文字名稱，不放 logo。
 ==================================================================
 -->
@@ -98,6 +100,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);overflow:hid
 .seg button:focus-visible{outline:2px solid var(--cyan);outline-offset:1px}
 .pl-keys,.pl-src,.pl-note{font-size:11px;line-height:1.7;color:var(--muted)}
 .pl-src{color:#c9d2d9}
+.clock{display:flex;align-items:baseline;gap:8px}
+#clock{font-family:var(--mono);font-size:24px;font-weight:500;line-height:1}
+.pl-btns{display:flex;gap:6px}
+.pl-btns button,.toggle{all:unset;box-sizing:border-box;cursor:pointer;height:26px;padding:0 10px;border-radius:8px;background:rgba(255,255,255,.07);font-family:var(--mono);font-size:12px;display:inline-grid;place-items:center;color:var(--text)}
+.pl-btns button:hover,.toggle:hover{background:rgba(255,255,255,.13)}
+.toggle{font-family:var(--sans)}
+.toggle[aria-pressed="true"]{background:rgba(94,211,239,.16);box-shadow:inset 0 0 0 1px rgba(94,211,239,.55)}
+.pl-btns button:focus-visible,.toggle:focus-visible{outline:2px solid var(--cyan);outline-offset:1px}
 #loading{position:fixed;inset:0;z-index:20;display:grid;place-items:center;background:var(--bg);color:var(--muted);font-size:14px;text-align:center;padding:24px;transition:opacity .5s}
 #loading.hide{opacity:0;pointer-events:none}
 @media (max-width:760px){
@@ -111,6 +121,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);overflow:hid
   #player{top:calc(var(--st) + 56px);bottom:auto;right:calc(var(--sr) + 12px);width:auto;padding:6px}
   #player .pl-row{margin:0}
   #player .label,.pl-keys,.pl-src,.pl-note{display:none}
+  #player .pl-extra,#dayPhase{display:none}
+  #clock{font-size:16px}
 }
 @media (prefers-reduced-motion:reduce){#loading{transition:none}}
 </style>
@@ -162,14 +174,23 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);overflow:hid
   <div class="inst-legend"><span class="up" id="lBuy"></span><span class="down" id="lSell"></span></div>
   </div>
 </section>
-<section id="player" class="panel" aria-label="模擬速度">
+<section id="player" class="panel" aria-label="時間與模擬速度">
+  <div class="pl-row">
+    <div class="clock"><span id="clock">21:00</span><span id="dayPhase" class="label">夜晚</span></div>
+    <div class="pl-btns"><button id="hourBack" type="button" aria-label="時間倒退一小時">−1h</button><button id="hourFwd" type="button" aria-label="時間前進一小時">+1h</button></div>
+  </div>
   <div class="pl-row">
     <span class="label">模擬速度</span>
     <div class="seg" id="speedSeg" role="group" aria-label="模擬速度">
       <button id="playBtn" type="button" aria-label="暫停">❚❚</button><button type="button" data-v="1">1×</button><button type="button" data-v="10">10×</button><button type="button" data-v="30">30×</button><button type="button" data-v="60">60×</button>
     </div>
   </div>
-  <div class="pl-keys">← → 換一家　空白鍵 暫停　1–4 速度　C 重設視角　拖曳旋轉、中鍵拖曳平移、滾輪縮放</div>
+  <div class="pl-row pl-extra">
+    <span class="label">快門</span>
+    <div class="seg" id="shutterSeg" role="group" aria-label="長曝光"><button type="button" data-s="0">關</button><button type="button" data-s="0.6">短</button><button type="button" data-s="1.8">中</button><button type="button" data-s="4">長</button></div>
+    <button id="cycleBtn" class="toggle" type="button" aria-pressed="true">日夜循環</button>
+  </div>
+  <div class="pl-keys">← → 換一家　空白鍵 暫停　1–4 速度　− = 調時間　E 快門　N 日夜循環　C 重設視角　中鍵／雙指平移</div>
   <div class="pl-src" id="src"></div>
   <div class="pl-note">門口兩條隊伍只代表三大法人，不是全部投資人；進店頻率依成交筆數。僅供參考，不構成投資建議。</div>
 </section>
@@ -264,7 +285,8 @@ Object.assign(controls, { enableDamping: true, dampingFactor: 0.08, enablePan: t
 // 平移：滑鼠按住中鍵拖曳；手機雙指拖曳（雙指開合仍是縮放）
 controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN };
 controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
-scene.add(new THREE.HemisphereLight('#4a5f94', '#2b2119', 2.2));
+const hemi = new THREE.HemisphereLight('#4a5f94', '#2b2119', 2.2);
+scene.add(hemi);
 const moon = new THREE.DirectionalLight('#aab9ff', 0.9);
 moon.castShadow = true;
 moon.shadow.mapSize.set(2048, 2048);
@@ -277,7 +299,8 @@ const stageLight = new THREE.PointLight('#ffcf9a', 180, 70, 2);
 scene.add(stageLight);
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
-composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.6, 0.55, 0.82));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.6, 0.55, 0.82);
+composer.addPass(bloom);
 const tiltH = new ShaderPass(KIT.TiltShiftShader), tiltV = new ShaderPass(KIT.TiltShiftShader);
 composer.addPass(tiltH);
 composer.addPass(tiltV);
@@ -336,6 +359,8 @@ function buildTown() {
     })),
   });
   scene.add(sim.group);
+  sim.setView(camera, controls.target);
+  sim.setShutter(clk.shutter);
   if (coarse) sim.setDetail(2);
   sim.prewarm(15); // 預熱：開場就是流動中的樣子
 }
@@ -456,12 +481,20 @@ function bindEvents() {
   $('#prev').addEventListener('click', () => goTo(current - 1));
   $('#next').addEventListener('click', () => goTo(current + 1));
   $('#playBtn').addEventListener('click', togglePause);
+  $('#hourBack').addEventListener('click', () => shiftHour(-1));
+  $('#hourFwd').addEventListener('click', () => shiftHour(1));
+  $('#shutterSeg').addEventListener('click', e => { const b = e.target.closest('button[data-s]'); if (b) setShutter(Number(b.dataset.s)); });
+  $('#cycleBtn').addEventListener('click', () => setCycle(!clk.cycle));
   $('#speedSeg').addEventListener('click', e => { const b = e.target.closest('button[data-v]'); if (b) setSpeed(Number(b.dataset.v)); });
   addEventListener('keydown', e => {
     if (e.altKey || e.ctrlKey || e.metaKey) return;
     if (e.key === 'ArrowRight') { e.preventDefault(); goTo(current + 1); }
     else if (e.key === 'ArrowLeft') { e.preventDefault(); goTo(current - 1); }
     else if (e.key === ' ' && e.target.tagName !== 'BUTTON') { e.preventDefault(); togglePause(); }
+    else if (e.key === '-' || e.key === '_') shiftHour(-1);
+    else if (e.key === '=' || e.key === '+') shiftHour(1);
+    else if (e.key === 'e' || e.key === 'E') setShutter(SHUTTERS[(SHUTTERS.indexOf(clk.shutter) + 1) % SHUTTERS.length]);
+    else if (e.key === 'n' || e.key === 'N') setCycle(!clk.cycle);
     else if (e.key.length === 1 && e.key >= '1' && e.key <= '4') setSpeed(SPEEDS[Number(e.key) - 1]);
     else if (e.key === 'c' || e.key === 'C') goTo(current, false, true);
   });
@@ -475,6 +508,52 @@ function bindEvents() {
   });
 }
 
+// ==== [時間與日夜] 模擬時鐘隨播放速度前進（1× 為真實時間）；依太陽高度混合夜晚、黃昏、白天 ====
+const clk = { hour: 21, shown: 21, cycle: true, shutter: 0.6 };
+const SHUTTERS = [0, 0.6, 1.8, 4];
+const MOON_OFF = new THREE.Vector3(-45, 95, 60), SUN_OFF = new THREE.Vector3(), dirOff = MOON_OFF.clone();
+const TIME = {
+  bgN: new THREE.Color('#0b111b'), bgD: new THREE.Color('#a9c9e6'), bgT: new THREE.Color('#3d2e40'),
+  skyN: new THREE.Color('#4a5f94'), skyD: new THREE.Color('#d6e8ff'), skyT: new THREE.Color('#eaa27c'),
+  gndN: new THREE.Color('#2b2119'), gndD: new THREE.Color('#8a7a62'), gndT: new THREE.Color('#4d372a'),
+  sunD: new THREE.Color('#fff1dc'), sunT: new THREE.Color('#ffae70'), moon: new THREE.Color('#aab9ff'),
+};
+const clamp01 = x => Math.max(0, Math.min(1, x));
+const smooth01 = (e0, e1, x) => { const t = clamp01((x - e0) / (e1 - e0)); return t * t * (3 - 2 * t); };
+function applyTime(h) {
+  const elev = Math.sin(((h - 6) / 12) * Math.PI);
+  const n = smooth01(0.22, -0.12, elev), tw = clamp01(1 - Math.abs(elev) / 0.32) * 0.75; // n：1＝夜；tw：黃昏／清晨色調
+  scene.background.copy(TIME.bgD).lerp(TIME.bgN, n).lerp(TIME.bgT, tw);
+  scene.fog.color.copy(scene.background);
+  hemi.color.copy(TIME.skyD).lerp(TIME.skyN, n).lerp(TIME.skyT, tw * 0.6);
+  hemi.groundColor.copy(TIME.gndD).lerp(TIME.gndN, n).lerp(TIME.gndT, tw * 0.5);
+  hemi.intensity = 2.5 - 0.3 * n;
+  const az = ((h - 6) / 12) * Math.PI;
+  SUN_OFF.set(Math.cos(az) * 70, 25 + 90 * Math.max(elev, 0), 55);
+  dirOff.copy(SUN_OFF).lerp(MOON_OFF, n);
+  moon.color.copy(TIME.sunD).lerp(TIME.sunT, tw).lerp(TIME.moon, n);
+  moon.intensity = 3.0 * smooth01(-0.06, 0.2, elev) * (1 - n) + 0.9 * n;
+  renderer.toneMappingExposure = 0.95 + 0.1 * n;
+  stageLight.intensity = 25 + 155 * n;
+  bloom.strength = 0.3 + 0.3 * n;
+  bloom.threshold = 1.05 - 0.23 * n;
+  KIT.setDayNight(n);
+  sim.setNight(n);
+}
+const phaseName = h => (h >= 5 && h < 7 ? '清晨' : h >= 7 && h < 16.5 ? '白天' : h >= 16.5 && h < 19 ? '黃昏' : '夜晚');
+let clockT = 1;
+function clockTick(dt) {
+  clockT += dt;
+  if (clockT < 0.25) return;
+  clockT = 0;
+  const h = clk.shown, hh = Math.floor(h), mm = Math.floor((h - hh) * 60);
+  $('#clock').textContent = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  $('#dayPhase').textContent = phaseName(h);
+}
+const shiftHour = d => { clk.hour = (clk.hour + d + 24) % 24; };
+const setShutter = v => { clk.shutter = v; sim.setShutter(v); syncPlayer(); };
+const setCycle = on => { clk.cycle = on; syncPlayer(); };
+
 // ==== [播放控制] 暫停與 1×／10×／30×／60× ====
 const SPEEDS = [1, 10, 30, 60];
 const play = { speed: 1, paused: REDUCED };
@@ -483,6 +562,8 @@ function syncPlayer() {
   b.textContent = play.paused ? '▶' : '❚❚';
   b.setAttribute('aria-label', play.paused ? '繼續播放' : '暫停');
   document.querySelectorAll('#speedSeg button[data-v]').forEach(x => x.setAttribute('aria-pressed', String(!play.paused && Number(x.dataset.v) === play.speed)));
+  document.querySelectorAll('#shutterSeg button').forEach(x => x.setAttribute('aria-pressed', String(Number(x.dataset.s) === clk.shutter)));
+  $('#cycleBtn').setAttribute('aria-pressed', String(clk.cycle));
 }
 const setSpeed = v => { play.speed = v; play.paused = false; syncPlayer(); };
 const togglePause = () => { play.paused = !play.paused; syncPlayer(); };
@@ -501,12 +582,18 @@ function frame() {
   controls.update();
   clampPan();
   const T = controls.target;
-  moon.position.set(T.x - 45, 95, T.z + 60);
+  moon.position.copy(T).add(dirOff);
   moon.target.position.copy(T);
   stageLight.position.set(T.x + 2, 7.5, T.z + 8);
   const simDt = play.paused ? 0 : dt * play.speed; // 縮時：人流與車流一起加速
   sim.step(simDt);
   sim.update(Math.min(simDt, 0.5));
+  if (clk.cycle && simDt > 0) clk.hour = (clk.hour + simDt / 3600) % 24; // 日夜循環：時鐘跟著模擬時間走
+  let dh = clk.hour - clk.shown;
+  if (dh > 12) dh -= 24; else if (dh < -12) dh += 24;
+  clk.shown = (clk.shown + dh * (1 - Math.exp(-dt * 6)) + 24) % 24; // ±1 小時時平滑過渡
+  applyTime(clk.shown);
+  clockTick(dt);
   KIT.animate(t);
   composer.render();
   if (!window.__ready) { window.__ready = true; $('#loading').classList.add('hide'); }
@@ -520,7 +607,7 @@ async function main() {
   buildBoard();
   bindEvents();
   syncPlayer();
-  window.__town = { simulate: sec => { for (let x = sec; x > 0; x -= 1) sim.step(Math.min(1, x)); sim.update(0); }, stats: () => sim.stats(), traffic: () => sim.traffic(), modes: () => sim.modes() };
+  window.__town = { simulate: sec => { for (let x = sec; x > 0; x -= 1) sim.step(Math.min(1, x)); sim.update(0); }, stats: () => sim.stats(), traffic: () => sim.traffic(), modes: () => sim.modes(), set: o => { if (o.hour !== undefined) clk.hour = clk.shown = o.hour; if (o.shutter !== undefined) setShutter(o.shutter); } };
   $('#src').textContent = raw.meta.source === 'TWSE' ? `資料來源：臺灣證券交易所　資料日期 ${raw.meta.as_of}` : '目前是示意資料（數字為虛構），第一次抓取證交所資料後會自動更新';
   goTo(0, true, true);
   frame();

@@ -213,6 +213,9 @@ export function createTownSim({ blocks, shops = [], range = 1, extraWalkers = 3,
   // ---- 車流 ----
   const loops = [], cars = [];
   let carMeshes = [], tailMesh = null, carMats = null;
+  // ---- 快門光軌 ----
+  const TRAIL_MAX = 150; // 每台車的軌跡點數（每前進 1 m 記一點）
+  let shutter = 0, nightN = 1, trailMesh = null, view = null;
   function carPos(L, s, out) {
     let g = L.segs[L.segs.length - 1];
     for (const seg of L.segs) if (s < seg.s0 + seg.len) { g = seg; break; }
@@ -238,7 +241,7 @@ export function createTownSim({ blocks, shops = [], range = 1, extraWalkers = 3,
       let n = b._shop ? (b._shop.cfg.cars ?? 2) : prng() < 0.55 ? 1 : 2;
       n = Math.max(b._shop ? 1 : 0, Math.round(n * carScale));
       for (let i = 0; i < n; i++) {
-        const c = { L, s: (((i + prng() * 0.3) / n) * L.len) % L.len, v: 5, vmax: CAR.vmin + (CAR.vmax - CAR.vmin) * prng(), brake: false, color: CAR_COLORS[Math.floor(prng() * CAR_COLORS.length)] };
+        const c = { L, s: (((i + prng() * 0.3) / n) * L.len) % L.len, v: 5, vmax: CAR.vmin + (CAR.vmax - CAR.vmin) * prng(), brake: false, color: CAR_COLORS[Math.floor(prng() * CAR_COLORS.length)], dist: 0, hx: new Float32Array(TRAIL_MAX), hz: new Float32Array(TRAIL_MAX), hdx: new Float32Array(TRAIL_MAX), hdz: new Float32Array(TRAIL_MAX), hb: new Uint8Array(TRAIL_MAX), ht: new Float64Array(TRAIL_MAX), head: 0, count: 0 };
         L.cars.push(c); cars.push(c);
       }
       L.cars.sort((p, q) => p.s - q.s);
@@ -287,6 +290,8 @@ export function createTownSim({ blocks, shops = [], range = 1, extraWalkers = 3,
         c.v = c.brake ? Math.max(vt, c.v - CAR.brk * 1.8 * h) : Math.min(vt, c.v + CAR.acc * h);
         c.s += c.v * h;
         if (c.s >= L.len) c.s -= L.len;
+        c.dist += c.v * h;
+        if (c.dist >= 1) { c.dist = 0; recordTrail(c); }
       }
     }
   }
@@ -328,7 +333,85 @@ export function createTownSim({ blocks, shops = [], range = 1, extraWalkers = 3,
     beamMesh.renderOrder = 2;
     carMeshes = [bodyMesh, darkMesh, new THREE.InstancedMesh(head, carMats.head, N), tailMesh, beamMesh];
     for (const m of carMeshes) { m.frustumCulled = false; group.add(m); }
+    buildTrails();
     setNight(1);
+  }
+
+  // ---- 快門光軌：每台車兩條光帶（頭燈白、尾燈紅），依曝光秒數淡出；面向鏡頭的燈較亮，煞車處尾燈更亮 ----
+  function recordTrail(c) {
+    carPos(c.L, c.s, _o);
+    const j = (c.head + 1) % TRAIL_MAX;
+    c.hx[j] = _o.x; c.hz[j] = _o.z; c.hdx[j] = _o.hx; c.hdz[j] = _o.hz;
+    c.hb[j] = c.brake ? 1 : 0; c.ht[j] = performance.now() / 1000;
+    c.head = j;
+    c.count = Math.min(TRAIL_MAX - 1, c.count + 1);
+  }
+  function buildTrails() {
+    const ribs = cars.length * 2, verts = ribs * TRAIL_MAX * 2, uv = new Float32Array(verts * 2), idx = [];
+    for (let r = 0; r < ribs; r++) {
+      const base = r * TRAIL_MAX * 2;
+      for (let i = 0; i < TRAIL_MAX; i++) {
+        const v = base + i * 2, t = i / (TRAIL_MAX - 1);
+        uv[v * 2] = 0; uv[v * 2 + 1] = t; uv[v * 2 + 2] = 1; uv[v * 2 + 3] = t;
+        if (i < TRAIL_MAX - 1) idx.push(v, v + 1, v + 2, v + 1, v + 3, v + 2);
+      }
+    }
+    const stripe = document.createElement('canvas');
+    stripe.width = 64; stripe.height = 4;
+    const sg = stripe.getContext('2d'), img = sg.createImageData(64, 4);
+    for (let y = 0; y < 4; y++) for (let x = 0; x < 64; x++) { const f = (x - 31.5) / 13, i = (y * 64 + x) * 4; img.data[i] = img.data[i + 1] = img.data[i + 2] = 255; img.data[i + 3] = Math.round(Math.exp(-f * f) * 255); }
+    sg.putImageData(img, 0, 0);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts * 3), 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(verts * 3), 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    g.setIndex(idx);
+    trailMesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(stripe), vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false }));
+    trailMesh.frustumCulled = false;
+    trailMesh.renderOrder = 3;
+    trailMesh.visible = false;
+    group.add(trailMesh);
+  }
+  function updateTrails() {
+    if (!trailMesh) return;
+    trailMesh.visible = shutter > 0;
+    if (!shutter) return;
+    const now = performance.now() / 1000, P = trailMesh.geometry.attributes.position, C = trailMesh.geometry.attributes.color, pa = P.array, ca = C.array;
+    let vx = 0, vz = 1;
+    if (view) { vx = view.camera.position.x - view.target.x; vz = view.camera.position.z - view.target.z; const vl = Math.hypot(vx, vz) || 1; vx /= vl; vz /= vl; }
+    const glowK = 0.35 + 0.65 * nightN;
+    let v = 0;
+    for (const c of cars) {
+      carPos(c.L, c.s, _o);
+      const cx = _o.x, cz = _o.z, chx = _o.hx, chz = _o.hz;
+      for (let side = 0; side < 2; side++) {
+        const off = side ? -2.1 : 2.1, w = side ? 0.42 : 0.5, cr = side ? 2.6 : 2.2, cg = side ? 0.16 : 1.9, cb = side ? 0.1 : 1.35;
+        let lx = cx + chx * off, lz = cz + chz * off;
+        for (let k = 0; k < TRAIL_MAX; k++) {
+          let alpha = 0, x = 0, z = 0, dx = 0, dz = 1, br = c.brake;
+          if (k === 0) { alpha = 1; x = cx; z = cz; dx = chx; dz = chz; }
+          else if (k - 1 < c.count) {
+            const j = (c.head - (k - 1) + TRAIL_MAX) % TRAIL_MAX, age = now - c.ht[j];
+            if (age >= 0 && age <= shutter) { alpha = 1 - age / shutter; x = c.hx[j]; z = c.hz[j]; dx = c.hdx[j]; dz = c.hdz[j]; br = c.hb[j]; }
+          }
+          const i3 = v * 3;
+          if (alpha > 0) {
+            const face = dx * vx + dz * vz, kk = alpha * glowK * (0.3 + 0.9 * Math.max(0, side ? -face : face)) * (side && br ? 1.8 : 1);
+            const px = x + dx * off, pz = z + dz * off, nx = -dz * w, nz = dx * w;
+            pa[i3] = px + nx; pa[i3 + 1] = 0.66; pa[i3 + 2] = pz + nz;
+            pa[i3 + 3] = px - nx; pa[i3 + 4] = 0.66; pa[i3 + 5] = pz - nz;
+            ca[i3] = ca[i3 + 3] = cr * kk; ca[i3 + 1] = ca[i3 + 4] = cg * kk; ca[i3 + 2] = ca[i3 + 5] = cb * kk;
+            lx = px; lz = pz;
+          } else {
+            pa[i3] = pa[i3 + 3] = lx; pa[i3 + 1] = pa[i3 + 4] = 0.66; pa[i3 + 2] = pa[i3 + 5] = lz;
+            ca.fill(0, i3, i3 + 6);
+          }
+          v += 2;
+        }
+      }
+    }
+    P.needsUpdate = true;
+    C.needsUpdate = true;
   }
 
   // ---- 畫面更新 ----
@@ -367,6 +450,7 @@ export function createTownSim({ blocks, shops = [], range = 1, extraWalkers = 3,
   }
   // n：1＝夜晚（車燈全亮），0＝白天
   function setNight(n) {
+    nightN = n;
     if (!carMats) return;
     carMats.head.color.copy(carMats.headBase).multiplyScalar(0.35 + 0.65 * n);
     carMats.tail.color.copy(carMats.tailBase).multiplyScalar(0.45 + 0.55 * n);
@@ -382,10 +466,13 @@ export function createTownSim({ blocks, shops = [], range = 1, extraWalkers = 3,
       for (let i = 0; i < n; i++) { stepPeople(h); if (withCars) stepCars(h); }
     },
     // 每幀呼叫：更新小人與車子的位置；dt 用來推動走路動作（建議傳 min(simDt, 0.5)）
-    update(dt = 0) { writePeople(dt); writeCars(); },
+    update(dt = 0) { writePeople(dt); writeCars(); updateTrails(); },
     prewarm(sec = 15) { for (let t = sec; t > 0; t -= 1) api.step(Math.min(1, t)); api.update(0); },
     setNight,
     setDetail(level) { crowd.setDetail(level); },
+    // 快門：sec＝曝光秒數（0＝關閉）；setView 讓面向鏡頭的車燈較亮
+    setShutter(sec) { shutter = sec; },
+    setView(camera, target) { view = { camera, target }; },
     stats: () => S.map(s => ({ shop: s.i, queues: s.qs.map(q => ({ target: q.target, now: q.queue.length })) })),
     modes: () => people.reduce((m, p) => ((m[p.mode] = (m[p.mode] || 0) + 1), m), {}),
     traffic() {

@@ -1,0 +1,8 @@
+{
+  "stocks": [
+    { "code": "2330", "name": "台積電", "kind": "股票", "style": "showroom", "color": "#4F86F7" },
+    { "code": "2454", "name": "聯發科", "kind": "股票", "style": "hangar", "color": "#F2A93B" },
+    { "code": "0050", "name": "元大台灣50", "kind": "ETF", "style": "cafe", "color": "#9B6BFF" },
+    { "code": "00632R", "name": "元大台灣50反1", "kind": "ETF", "style": "bookshop", "color": "#7F8CA3" }
+  ]
+}

@@ -1,0 +1,33 @@
+name: 每日更新台股資料
+on:
+  schedule:
+    - cron: '30 9 * * 1-5'   # 台灣時間週一到週五 17:30（收盤、三大法人公布之後）
+  workflow_dispatch:
+    inputs:
+      months:
+        description: '回補幾個月的歷史（留空＝自動）'
+        required: false
+        default: ''
+permissions:
+  contents: write
+concurrency:
+  group: update-data
+  cancel-in-progress: false
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 抓證交所資料
+        run: node scripts/fetch-twse.mjs ${{ github.event.inputs.months && format('--months={0}', github.event.inputs.months) || '' }}
+      - name: 有變更才提交
+        run: |
+          if git diff --quiet -- data/stocks.json; then echo "資料沒有變化"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898333+github-actions[bot]@users.noreply.github.com"
+          git add data/stocks.json
+          git commit -m "更新台股資料 $(date -u +%F)"
+          git push

@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b111b">
+<title>台股小鎮｜每日收盤的成交與法人買賣</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Outfit:wght@400;500;600;800&display=swap">
+<!--
+============================ 開發筆記 ============================
+專案：台股小鎮。每檔股票或 ETF 一間店；人潮依成交金額縮放；門口右邊隊伍＝三大法人買進金額、左邊＝賣出金額。
+素材：town-kit.js（街景、方塊小人、店面、欄杆）。股票清單與店面樣式在 stocks.config.json。
+資料：data/stocks.json，由 scripts/fetch-twse.mjs 產生（GitHub Actions 每個交易日 17:30 執行）。
+      格式 { meta:{ source:'TWSE'|'sample', as_of }, stocks:[ { code, name, kind, style, color,
+      daily:[ { date, volume(股), value(元), open, high, low, close, change, trades } ], inst:{ date, buy, sell, net }(股) } ] }
+換算：店面順序＝成交金額排名；路人 4～18 人（成交金額平方根）；兩條隊伍 3～48 人（法人買進／賣出股數 × 收盤價的平方根）。
+模擬：town-sim.js。路人經過右前角排買方、左前角排賣方；叫號間隔 7～2.2 秒（成交筆數平方根）；排頭進店、從中間走道出來。
+      車流每個街廓 1～4 台（成交金額）。播放速度 1／10／30／60 倍，可暫停。
+顏色：紅漲綠跌。招牌只放文字名稱，不放 logo。
+==================================================================
+-->
+<style>
+:root{
+  --bg:#0b111b; --panel:rgba(13,18,24,.76); --line:rgba(255,255,255,.09); --text:#EDF2F5; --muted:#8B99A5;
+  --cyan:#5ED3EF; --up:#ff4d4f; --down:#22b35e; --flat:#aab4bd;
+  --sans:"Outfit","PingFang TC","Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --st:env(safe-area-inset-top,0px); --sb:env(safe-area-inset-bottom,0px); --sl:env(safe-area-inset-left,0px); --sr:env(safe-area-inset-right,0px);
+  color-scheme:dark; box-sizing:border-box;
+}
+*,*::before,*::after{box-sizing:inherit}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);overflow:hidden;-webkit-font-smoothing:antialiased}
+#stage{position:fixed;inset:0}
+#stage canvas{display:block;touch-action:none}
+.vignette{position:fixed;inset:0;pointer-events:none;background:radial-gradient(90% 70% at 0% 0%,rgba(4,7,11,.62),transparent 60%),linear-gradient(to top,rgba(4,7,11,.55),transparent 30%)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+.label{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;color:var(--muted)}
+.up{color:var(--up)} .down{color:var(--down)} .flat{color:var(--flat)}
+#brand{position:fixed;left:calc(var(--sl) + 28px);top:calc(var(--st) + 24px);max-width:380px;pointer-events:none}
+.t-small{font-weight:800;font-size:18px}
+.t-big{margin:2px 0 0;font-weight:800;font-size:46px;line-height:1.05;color:var(--cyan)}
+.lead{margin:10px 0 0;color:#c4cdd4;font-size:14px;line-height:1.65}
+#board{position:fixed;right:calc(var(--sr) + 22px);top:calc(var(--st) + 22px);width:320px;padding:12px 12px 10px}
+.board-head{display:flex;align-items:center;justify-content:space-between;padding:0 4px 8px}
+.nav{display:flex;align-items:center;gap:6px}
+.nav button{all:unset;cursor:pointer;width:30px;height:26px;display:grid;place-items:center;border-radius:8px;background:rgba(255,255,255,.06);font-size:14px}
+.nav button:hover{background:rgba(255,255,255,.12)}
+#counter{font-family:var(--mono);font-size:12px;min-width:44px;text-align:center}
+#rank{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.row{all:unset;box-sizing:border-box;display:grid;grid-template-columns:20px 8px 1fr 70px 64px;align-items:center;gap:8px;width:100%;padding:6px;border-radius:8px;cursor:pointer;font-size:13px}
+.row:hover{background:rgba(255,255,255,.05)}
+.row[aria-current="true"]{background:rgba(94,211,239,.13)}
+.nav button:focus-visible,.row:focus-visible{outline:2px solid var(--cyan);outline-offset:1px}
+.r-rank,.r-val,.r-pct{font-family:var(--mono);font-size:11.5px}
+.r-rank{color:var(--muted)} .r-val{text-align:right;color:#c9d2d9} .r-pct{text-align:right}
+.r-dot{width:8px;height:8px;border-radius:50%}
+.r-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#card{position:fixed;left:calc(var(--sl) + 22px);bottom:calc(var(--sb) + 22px);width:370px;padding:16px 18px 14px}
+.card-head{display:flex;justify-content:space-between;align-items:center}
+.chip{font-family:var(--mono);font-size:10px;padding:3px 8px;border-radius:999px;border:1px solid rgba(255,255,255,.2);color:#c9d2d9}
+.chip.sample{border-color:rgba(245,164,69,.5);color:#F5A445}
+.card-name{display:flex;align-items:baseline;gap:10px;margin-top:8px}
+.card-name h2{margin:0;font-size:26px;font-weight:800}
+.card-kpi{display:flex;align-items:flex-end;gap:14px;margin-top:10px}
+.kpi-num{font-family:var(--mono);font-weight:500;font-size:40px;line-height:.95}
+.kpi-side{display:flex;flex-direction:column;gap:4px;padding-bottom:2px}
+.chg{font-family:var(--mono);font-size:13px;font-weight:500}
+#spark{display:block;width:100%;height:46px;margin-top:12px}
+.spark-axis{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:4px}
+.card-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}
+.card-stats div{display:flex;flex-direction:column;gap:3px;min-width:0}
+.card-stats b{font-family:var(--mono);font-weight:500;font-size:12.5px;white-space:nowrap}
+.inst{display:flex;justify-content:space-between;align-items:baseline;margin-top:12px;font-size:12.5px}
+.inst-bar{display:flex;height:6px;border-radius:3px;overflow:hidden;margin-top:6px;background:rgba(255,255,255,.08)}
+.inst-bar i{display:block;height:100%}
+#iBuy{background:var(--up)} #iSell{background:var(--down)}
+.inst-legend{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10.5px;margin-top:4px}
+#hint{position:fixed;right:calc(var(--sr) + 24px);bottom:calc(var(--sb) + 20px);text-align:right;font-size:12px;line-height:1.8;color:var(--muted);pointer-events:none;max-width:420px}
+#player{position:fixed;right:calc(var(--sr) + 22px);bottom:calc(var(--sb) + 22px);width:340px;padding:12px 14px}
+.pl-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+.seg{display:flex;gap:2px;padding:2px;border-radius:9px;background:rgba(255,255,255,.05)}
+.seg button{all:unset;box-sizing:border-box;cursor:pointer;min-width:42px;height:26px;display:grid;place-items:center;border-radius:7px;font-family:var(--mono);font-size:12px;color:#c9d2d9}
+.seg button:hover{background:rgba(255,255,255,.08)}
+.seg button[aria-pressed="true"]{background:#F2F5F7;color:#0d1218}
+.seg button:focus-visible{outline:2px solid var(--cyan);outline-offset:1px}
+.pl-keys,.pl-src,.pl-note{font-size:11px;line-height:1.7;color:var(--muted)}
+.pl-src{color:#c9d2d9}
+#loading{position:fixed;inset:0;z-index:20;display:grid;place-items:center;background:var(--bg);color:var(--muted);font-size:14px;text-align:center;padding:24px;transition:opacity .5s}
+#loading.hide{opacity:0;pointer-events:none}
+@media (max-width:760px){
+  #brand{left:calc(var(--sl) + 16px);top:calc(var(--st) + 14px)}
+  .t-small{font-size:13px} .t-big{font-size:28px} .lead{display:none}
+  #board{top:calc(var(--st) + 14px);right:calc(var(--sr) + 12px);width:auto;padding:6px}
+  #board .label,#rank{display:none}
+  .board-head{padding:0}
+  #card{left:calc(var(--sl) + 10px);right:calc(var(--sr) + 10px);bottom:calc(var(--sb) + 10px);width:auto;padding:12px 14px}
+  .kpi-num{font-size:32px} #spark{height:36px}
+  #player{top:calc(var(--st) + 56px);bottom:auto;right:calc(var(--sr) + 12px);width:auto;padding:6px}
+  #player .pl-row{margin:0}
+  #player .label,.pl-keys,.pl-src,.pl-note{display:none}
+}
+@media (prefers-reduced-motion:reduce){#loading{transition:none}}
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="stage" aria-hidden="true"></div>
+<div class="vignette" aria-hidden="true"></div>
+<header id="brand">
+  <div class="t-small">每日收盤</div>
+  <h1 class="t-big">台股小鎮</h1>
+  <p class="lead">每檔股票一間店。成交金額越大，街上人潮越多；門口右邊排的是三大法人買進、左邊是賣出。</p>
+</header>
+<aside id="board" class="panel" aria-label="成交金額排行">
+  <div class="board-head">
+    <span class="label">成交金額排行</span>
+    <div class="nav">
+      <button id="prev" type="button" aria-label="上一家">←</button>
+      <span id="counter">1 / 4</span>
+      <button id="next" type="button" aria-label="下一家">→</button>
+    </div>
+  </div>
+  <ol id="rank"></ol>
+</aside>
+<section id="card" class="panel" aria-live="polite">
+  <div class="card-head"><span class="label" id="cRank"></span><span class="chip" id="cChip"></span></div>
+  <div class="card-name"><h2 id="cName">—</h2><span class="label" id="cCode"></span></div>
+  <div class="card-kpi">
+    <div class="kpi-num" id="cClose">—</div>
+    <div class="kpi-side"><span class="label">收盤價</span><span class="chg" id="cChg"></span></div>
+  </div>
+  <canvas id="spark" aria-label="近 30 日成交金額"></canvas>
+  <div class="spark-axis"><span id="sFrom"></span><span>近 30 日成交金額（紅漲綠跌）</span><span id="sTo"></span></div>
+  <div class="card-stats">
+    <div><span class="label">成交金額</span><b id="cVal">—</b></div>
+    <div><span class="label">成交量</span><b id="cVol">—</b></div>
+    <div><span class="label">開／高／低</span><b id="cOHL">—</b></div>
+  </div>
+  <div class="inst"><span class="label">三大法人</span><span id="cInst">—</span></div>
+  <div class="inst-bar"><i id="iBuy"></i><i id="iSell"></i></div>
+  <div class="inst-legend"><span class="up" id="lBuy"></span><span class="down" id="lSell"></span></div>
+</section>
+<section id="player" class="panel" aria-label="模擬速度">
+  <div class="pl-row">
+    <span class="label">模擬速度</span>
+    <div class="seg" id="speedSeg" role="group" aria-label="模擬速度">
+      <button id="playBtn" type="button" aria-label="暫停">❚❚</button><button type="button" data-v="1">1×</button><button type="button" data-v="10">10×</button><button type="button" data-v="30">30×</button><button type="button" data-v="60">60×</button>
+    </div>
+  </div>
+  <div class="pl-keys">← → 換一家　空白鍵 暫停　1–4 速度　C 重設視角　拖曳旋轉、滾輪縮放</div>
+  <div class="pl-src" id="src"></div>
+  <div class="pl-note">門口兩條隊伍只代表三大法人，不是全部投資人；進店頻率依成交筆數。僅供參考，不構成投資建議。</div>
+</section>
+<div id="loading"><div id="loadMsg">載入台股小鎮…</div></div>
+
+<script>
+window.__ready = false;
+setTimeout(function () { if (!window.__ready) { var el = document.getElementById('loadMsg'); if (el) el.textContent = '3D 函式庫載入失敗，請確認網路連線後重新整理。'; } }, 15000);
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import * as KIT from './town-kit.js';
+import { createTownSim } from './town-sim.js';
+
+// ==== [設定] ====
+const UP = '#ff4d4f', DOWN = '#22b35e', FLAT = '#aab4bd';
+const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const $ = s => document.querySelector(s);
+
+// ==== [格式] ====
+const nf = (v, d = 0) => v.toLocaleString('zh-TW', { minimumFractionDigits: d, maximumFractionDigits: d });
+const fmtPrice = v => (v == null ? '—' : nf(v, v % 1 ? 2 : 0));
+const fmtYi = v => `${nf(v / 1e8, v >= 1e10 ? 0 : 1)} 億`;
+const fmtLots = v => `${nf(Math.round(v / 1000))} 張`;
+const fmtSigned = v => (v > 0 ? '+' : v < 0 ? '−' : '') + nf(Math.abs(v), Math.abs(v) % 1 ? 2 : 0);
+const pctText = p => `${p > 0 ? '▲' : p < 0 ? '▼' : '—'} ${Math.abs(p * 100).toFixed(2)}%`;
+const tone = v => (v > 0 ? 'up' : v < 0 ? 'down' : 'flat');
+
+// ==== [資料] data/stocks.json：換算人潮與隊伍長度 ====
+async function loadData() {
+  const r = await fetch('data/stocks.json', { cache: 'no-store' });
+  if (!r.ok) throw new Error(`讀不到 data/stocks.json（HTTP ${r.status}）`);
+  return r.json();
+}
+function prepare(raw) {
+  const list = raw.stocks.filter(s => s.daily && s.daily.length).map(s => {
+    const d = s.daily, last = d[d.length - 1], prevClose = last.close - (last.change || 0);
+    const recent = d.slice(-30);
+    return { ...s, last, pct: prevClose ? (last.change || 0) / prevClose : 0, series: recent.map(x => x.value), seriesTone: recent.map(x => x.change || 0), seriesDates: recent.map(x => x.date) };
+  }).sort((a, b) => b.last.value - a.last.value);
+  list.forEach((s, i) => { s.rank = i + 1; });
+  const maxVal = Math.max(...list.map(s => s.last.value));
+  const instVal = s => (s.inst ? { buy: s.inst.buy * s.last.close, sell: s.inst.sell * s.last.close } : null); // 股數 × 收盤價＝金額，不同股價才能比較
+  const maxInst = Math.max(1, ...list.map(s => instVal(s)).filter(Boolean).flatMap(v => [v.buy, v.sell]));
+  const maxTrades = Math.max(1, ...list.map(s => s.last.trades || 0));
+  for (const s of list) {
+    const iv = instVal(s);
+    s.walkers = Math.round(4 + 14 * Math.sqrt(s.last.value / maxVal));
+    s.cars = 1 + Math.round(3 * Math.sqrt(s.last.value / maxVal));
+    s.interval = 7 - 4.8 * Math.sqrt((s.last.trades || 0) / maxTrades); // 叫號間隔：成交筆數越多越快（7～2.2 秒）
+    s.qBuy = iv ? Math.round(3 + 45 * Math.sqrt(iv.buy / maxInst)) : 8;
+    s.qSell = iv ? Math.round(3 + 45 * Math.sqrt(iv.sell / maxInst)) : 8;
+    s.instVal = iv;
+  }
+  return list;
+}
+function shopInfoFor(s) {
+  const L = s.last;
+  return {
+    name: s.name, color: s.color, title: `${s.code} ${s.name}`, rank: s.rank,
+    rows: [['收盤', fmtPrice(L.close)], ['漲跌', `${fmtSigned(L.change || 0)}（${(s.pct * 100).toFixed(2)}%）`], ['成交金額', fmtYi(L.value)], ['成交量', fmtLots(L.volume)]],
+    tags: [`開 ${fmtPrice(L.open)}`, `高 ${fmtPrice(L.high)}`, `低 ${fmtPrice(L.low)}`], tagLabel: '',
+    big: fmtPrice(L.close), bigLabel: '收盤價', delta: s.pct, deltaLabel: '較前日', series: s.series,
+    upColor: UP, downColor: DOWN,
+    ledHeader: `成交金額第 ${s.rank} 名　${s.code} ${s.name}`, banner: `成交第${s.rank}名`,
+    promo: '今日行情', code: s.code, menuHeader: s.kind === 'ETF' ? 'ETF 行情' : '個股行情',
+    ticker: `${s.code} ${s.name}　收盤 ${fmtPrice(L.close)}　${pctText(s.pct)}　成交金額 ${fmtYi(L.value)}　` + (s.inst ? `三大法人${s.inst.net >= 0 ? '買超' : '賣超'} ${fmtLots(Math.abs(s.inst.net))}` : '') + '　　',
+  };
+}
+
+// ==== [渲染器、場景、燈光、後製] ====
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, matchMedia('(pointer: coarse)').matches ? 1.25 : 1.75));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+$('#stage').appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#0b111b');
+scene.fog = new THREE.Fog('#0b111b', 150, 380);
+const camera = new THREE.PerspectiveCamera(22, innerWidth / innerHeight, 1, 900);
+const controls = new OrbitControls(camera, renderer.domElement);
+Object.assign(controls, { enableDamping: true, dampingFactor: 0.08, enablePan: false, minDistance: 40, maxDistance: 240, minPolarAngle: 0.2, maxPolarAngle: 1.22, rotateSpeed: 0.6 });
+scene.add(new THREE.HemisphereLight('#4a5f94', '#2b2119', 2.2));
+const moon = new THREE.DirectionalLight('#aab9ff', 0.9);
+moon.castShadow = true;
+moon.shadow.mapSize.set(2048, 2048);
+Object.assign(moon.shadow.camera, { left: -60, right: 60, top: 60, bottom: -60, near: 1, far: 300 });
+moon.shadow.camera.updateProjectionMatrix();
+moon.shadow.bias = -0.0004;
+moon.shadow.normalBias = 0.03;
+scene.add(moon, moon.target);
+const stageLight = new THREE.PointLight('#ffcf9a', 180, 70, 2);
+scene.add(stageLight);
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.6, 0.55, 0.82));
+const tiltH = new ShaderPass(KIT.TiltShiftShader), tiltV = new ShaderPass(KIT.TiltShiftShader);
+composer.addPass(tiltH);
+composer.addPass(tiltV);
+composer.addPass(new OutputPass());
+const setTilt = () => { tiltH.uniforms.dir.value.set(1 / innerWidth, 0); tiltV.uniforms.dir.value.set(0, 1 / innerHeight); };
+setTilt();
+
+// ==== [小鎮] 2×2 地塊；成交金額第 1 名在前排左邊 ====
+let raw = null, stocks = [], shops = [], sim = null;
+function smallSign(g, text, color, x, z) {
+  const tex = KIT.canvasTex(256, 96, (c, W, H) => {
+    c.fillStyle = '#10151c'; c.fillRect(0, 0, W, H);
+    c.fillStyle = color; c.fillRect(0, H - 10, W, 10);
+    c.fillStyle = '#ffffff'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    KIT.fitText(c, text, W * 0.86, 44, 800); c.fillText(text, W / 2, H * 0.44);
+  });
+  KIT.B(g, 0.06, 1.3, 0.06, KIT.std('#2a3038', 0.6, 0.4), x, 0.65, z, false);
+  const p = KIT.panel(g, 1.4, 0.52, KIT.texMat(tex, 1.1, 0.9), x, 1.45, z + 0.04, 0.35);
+  p.material.side = THREE.DoubleSide;
+}
+function buildTown() {
+  const street = KIT.createStreet({ cols: 2, rows: 2, ring: 1, seed: 5 });
+  scene.add(street.group);
+  const lots = [...street.lots].sort((a, b) => b.z - a.z || a.x - b.x);
+  shops = stocks.map((s, i) => {
+    const lot = lots[i], info = shopInfoFor(s);
+    const g = KIT.createShop(s.style, info, { props: false });
+    g.position.set(lot.x, KIT.DIM.curbY, lot.z);
+    // 廣場小物：兩條隊伍佔掉前方廣場，中間 2 公尺是出店走道；小物放在四角與人行道邊
+    for (const [x, z] of [[-11.2, 3.8], [-11.2, 11.3], [11.2, 11.3], [11.2, 3.8]]) { KIT.addProp(g, 'lamp', x, z); KIT.addPool(g, x, z, 7, 1.1); }
+    for (const x of [-8.6, -5.7, 5.7, 8.6]) KIT.addProp(g, 'bench', x, 11.0);
+    for (const x of [-11, 11]) KIT.addProp(g, 'planter', x, 6.4);
+    KIT.addProp(g, 'bin', 3.4, 11.4);
+    KIT.addProp(g, 'hydrant', -10.6, 14.3);
+    KIT.sandwichBoard(g, KIT.shopInfo(info), -3.2, 11.3);
+    smallSign(g, '法人買進', UP, 5.2, 10.4);
+    smallSign(g, '法人賣出', DOWN, -5.2, 10.4);
+    scene.add(g);
+    // 右邊買方、左邊賣方（鏡像）；inner 1.1＝兩邊各往外移，中間留走道
+    const buy = KIT.createQueueMaze({ color: UP, inner: 1.1 }), sell = KIT.createQueueMaze({ color: DOWN, inner: 1.1 });
+    buy.group.position.copy(g.position);
+    sell.group.position.copy(g.position);
+    sell.group.scale.x = -1;
+    scene.add(buy.group, sell.group);
+    return { s, lot, g, buy, sell };
+  });
+  KIT.finalize(scene);
+  KIT.setDayNight(1);
+  // 人流與車流：路人經過右前角排買方、左前角排賣方；叫號進店、從中間走道出來
+  const coarse = matchMedia('(pointer: coarse)').matches;
+  sim = createTownSim({
+    blocks: street.blocks, seed: 21, carScale: coarse ? 0.5 : 1,
+    shops: shops.map(({ s, lot, buy, sell }) => ({
+      lot, accent: s.color, interval: s.interval, walkers: s.walkers, cars: s.cars,
+      queues: [{ maze: buy, mirror: 1, target: s.qBuy, color: UP }, { maze: sell, mirror: -1, target: s.qSell, color: DOWN }],
+    })),
+  });
+  scene.add(sim.group);
+  if (coarse) sim.setDetail(2);
+  sim.prewarm(15); // 預熱：開場就是流動中的樣子
+}
+
+// ==== [鏡頭與巡店] ====
+let current = 0, fly = null;
+const DEFAULT_VIEW = () => new THREE.Vector3().setFromSpherical(new THREE.Spherical(78 * (innerWidth < innerHeight ? 1.6 : 1), 0.94, 0.61));
+const shopTarget = i => new THREE.Vector3(shops[i].lot.x, 2.4, shops[i].lot.z + 4.5);
+const ease = t => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+function goTo(i, instant = false, reset = false) {
+  current = (i + shops.length) % shops.length;
+  const toT = shopTarget(current), off = reset ? DEFAULT_VIEW() : camera.position.clone().sub(controls.target);
+  if (instant || REDUCED) { controls.target.copy(toT); camera.position.copy(toT).add(off); fly = null; }
+  else fly = { t: 0, fromT: controls.target.clone(), toT, off };
+  updateUI();
+}
+controls.addEventListener('start', () => { fly = null; });
+
+// ==== [介面] ====
+function buildBoard() {
+  const ol = $('#rank');
+  ol.textContent = '';
+  shops.forEach(({ s }, i) => {
+    const li = document.createElement('li'), b = document.createElement('button');
+    b.type = 'button'; b.className = 'row';
+    b.innerHTML = `<span class="r-rank">${String(s.rank).padStart(2, '0')}</span><span class="r-dot"></span><span class="r-name"></span><span class="r-val">${fmtYi(s.last.value)}</span><span class="r-pct ${tone(s.pct)}">${pctText(s.pct)}</span>`;
+    b.querySelector('.r-dot').style.background = s.color;
+    b.querySelector('.r-name').textContent = `${s.code} ${s.name}`;
+    b.addEventListener('click', () => goTo(i));
+    li.appendChild(b);
+    ol.appendChild(li);
+  });
+}
+function updateUI() {
+  const { s } = shops[current], L = s.last;
+  $('#counter').textContent = `${current + 1} / ${shops.length}`;
+  $('#cRank').textContent = `成交金額第 ${s.rank} 名　${L.date}`;
+  const chip = $('#cChip');
+  chip.textContent = raw.meta.source === 'TWSE' ? '證交所資料' : '示意資料';
+  chip.className = 'chip' + (raw.meta.source === 'TWSE' ? '' : ' sample');
+  $('#cName').textContent = s.name;
+  $('#cCode').textContent = `${s.code}　${s.kind || ''}`;
+  $('#cClose').textContent = fmtPrice(L.close);
+  $('#cClose').className = 'kpi-num ' + tone(L.change || 0);
+  const chg = $('#cChg');
+  chg.textContent = `${fmtSigned(L.change || 0)}　${pctText(s.pct)}`;
+  chg.className = 'chg ' + tone(L.change || 0);
+  $('#cVal').textContent = fmtYi(L.value);
+  $('#cVol').textContent = fmtLots(L.volume);
+  $('#cOHL').textContent = `${fmtPrice(L.open)}／${fmtPrice(L.high)}／${fmtPrice(L.low)}`;
+  if (s.inst) {
+    const net = s.inst.net;
+    $('#cInst').innerHTML = `<span class="${tone(net)}">${net >= 0 ? '買超' : '賣超'} ${fmtLots(Math.abs(net))}</span>`;
+    const tot = s.instVal.buy + s.instVal.sell || 1;
+    $('#iBuy').style.width = `${(s.instVal.buy / tot) * 100}%`;
+    $('#iSell').style.width = `${(s.instVal.sell / tot) * 100}%`;
+    $('#lBuy').textContent = `買進 ${fmtLots(s.inst.buy)}（${fmtYi(s.instVal.buy)}）`;
+    $('#lSell').textContent = `賣出 ${fmtLots(s.inst.sell)}（${fmtYi(s.instVal.sell)}）`;
+  } else {
+    $('#cInst').textContent = '尚未公布';
+    $('#iBuy').style.width = $('#iSell').style.width = '0';
+    $('#lBuy').textContent = $('#lSell').textContent = '';
+  }
+  $('#sFrom').textContent = (s.seriesDates[0] || '').slice(5);
+  $('#sTo').textContent = (s.seriesDates.at(-1) || '').slice(5);
+  document.querySelectorAll('#rank .row').forEach((el, i) => el.setAttribute('aria-current', String(i === current)));
+  drawSpark(s);
+}
+function drawSpark(s) {
+  const cv = $('#spark'), dpr = Math.min(window.devicePixelRatio || 1, 2), W = cv.clientWidth, H = cv.clientHeight;
+  if (!W || !H) return;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  const v = s.series, n = v.length, max = Math.max(...v) * 1.06, bw = W / n;
+  v.forEach((x, i) => {
+    const h = Math.max(2, (x / max) * (H - 2)), t = s.seriesTone[i];
+    g.globalAlpha = i === n - 1 ? 1 : 0.7;
+    g.fillStyle = t > 0 ? UP : t < 0 ? DOWN : FLAT;
+    g.fillRect(i * bw + 1, H - h, Math.max(1, bw - 2), h);
+  });
+  g.globalAlpha = 1;
+}
+function bindEvents() {
+  $('#prev').addEventListener('click', () => goTo(current - 1));
+  $('#next').addEventListener('click', () => goTo(current + 1));
+  $('#playBtn').addEventListener('click', togglePause);
+  $('#speedSeg').addEventListener('click', e => { const b = e.target.closest('button[data-v]'); if (b) setSpeed(Number(b.dataset.v)); });
+  addEventListener('keydown', e => {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.key === 'ArrowRight') { e.preventDefault(); goTo(current + 1); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); goTo(current - 1); }
+    else if (e.key === ' ' && e.target.tagName !== 'BUTTON') { e.preventDefault(); togglePause(); }
+    else if (e.key.length === 1 && e.key >= '1' && e.key <= '4') setSpeed(SPEEDS[Number(e.key) - 1]);
+    else if (e.key === 'c' || e.key === 'C') goTo(current, false, true);
+  });
+  addEventListener('resize', () => {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+    composer.setSize(innerWidth, innerHeight);
+    setTilt();
+    drawSpark(shops[current].s);
+  });
+}
+
+// ==== [播放控制] 暫停與 1×／10×／30×／60× ====
+const SPEEDS = [1, 10, 30, 60];
+const play = { speed: 1, paused: REDUCED };
+function syncPlayer() {
+  const b = $('#playBtn');
+  b.textContent = play.paused ? '▶' : '❚❚';
+  b.setAttribute('aria-label', play.paused ? '繼續播放' : '暫停');
+  document.querySelectorAll('#speedSeg button[data-v]').forEach(x => x.setAttribute('aria-pressed', String(!play.paused && Number(x.dataset.v) === play.speed)));
+}
+const setSpeed = v => { play.speed = v; play.paused = false; syncPlayer(); };
+const togglePause = () => { play.paused = !play.paused; syncPlayer(); };
+
+// ==== [主迴圈與啟動] ====
+const clock = new THREE.Clock();
+function frame() {
+  requestAnimationFrame(frame);
+  const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
+  if (fly) {
+    fly.t = Math.min(1, fly.t + dt / 1.2);
+    controls.target.lerpVectors(fly.fromT, fly.toT, ease(fly.t));
+    camera.position.copy(controls.target).add(fly.off);
+    if (fly.t >= 1) fly = null;
+  }
+  controls.update();
+  const T = controls.target;
+  moon.position.set(T.x - 45, 95, T.z + 60);
+  moon.target.position.copy(T);
+  stageLight.position.set(T.x + 2, 7.5, T.z + 8);
+  const simDt = play.paused ? 0 : dt * play.speed; // 縮時：人流與車流一起加速
+  sim.step(simDt);
+  sim.update(Math.min(simDt, 0.5));
+  KIT.animate(t);
+  composer.render();
+  if (!window.__ready) { window.__ready = true; $('#loading').classList.add('hide'); }
+}
+async function main() {
+  raw = await loadData();
+  stocks = prepare(raw);
+  if (!stocks.length) throw new Error('資料裡沒有任何股票');
+  try { await Promise.race([document.fonts.load('800 100px "Outfit"'), new Promise(r => setTimeout(r, 2500))]); } catch (e) { /* 用系統字型 */ }
+  buildTown();
+  buildBoard();
+  bindEvents();
+  syncPlayer();
+  window.__town = { simulate: sec => { for (let x = sec; x > 0; x -= 1) sim.step(Math.min(1, x)); sim.update(0); }, stats: () => sim.stats(), traffic: () => sim.traffic(), modes: () => sim.modes() };
+  $('#src').textContent = raw.meta.source === 'TWSE' ? `資料來源：臺灣證券交易所　資料日期 ${raw.meta.as_of}` : '目前是示意資料（數字為虛構），第一次抓取證交所資料後會自動更新';
+  goTo(0, true, true);
+  frame();
+}
+main().catch(err => {
+  console.error(err);
+  window.__ready = true;
+  $('#loadMsg').textContent = `無法載入：${err.message}。請用本機伺服器開啟（例如 python3 -m http.server 8000）。`;
+});
+</script>
+</body>
+</html>
